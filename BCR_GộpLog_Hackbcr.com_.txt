@@ -1,0 +1,134 @@
+(() => {    
+  const FIREBASE_ENDPOINT = "https://baccarat-c2d23-default-rtdb.firebaseio.com/bcr";    
+  const targetTables = ["C01","C02","C03","C04","C05","C06","C07","C08","C09","C10"];    
+  const lastResults = {};    
+
+  // Cache log skip để gộp
+  const skipLog = new Set();
+
+  // === Firebase helper ===    
+  async function getFromFirebase(tableName) {    
+    try {    
+      const url = `${FIREBASE_ENDPOINT}/${tableName}.json`;    
+      const res = await fetch(url);    
+      return res.ok ? await res.json() : null;    
+    } catch {    
+      return null;    
+    }    
+  }    
+
+  async function saveToFirebase(table) {    
+    try {    
+      const payload = { cau: table.goodRoad || "", results: table.result || "" };    
+      const curr = payload.results;    
+      if (!curr) return;    
+
+      const prevCache = lastResults[table.table_name] || "";    
+      const prevFbData = await getFromFirebase(table.table_name);    
+      const prevFirebase = prevFbData?.results || "";    
+
+      if (curr === prevCache || curr === prevFirebase) {    
+        skipLog.add(table.table_name);    
+        return;    
+      }    
+
+      lastResults[table.table_name] = curr;    
+      const url = `${FIREBASE_ENDPOINT}/${table.table_name}.json`;    
+      const res = await fetch(url, {    
+        method: "PUT",    
+        headers: { "Content-Type": "application/json" },    
+        body: JSON.stringify(payload)    
+      });    
+      if (!res.ok) throw new Error(res.statusText);    
+
+      safeLog(`✅ Firebase (${table.table_name}): ${curr}`);    
+    } catch (err) {    
+      safeLog(`${table.table_name} lỗi Firebase: ${err.message}`);    
+    }    
+  }    
+
+  // === Handle data ===    
+  function handleData(data) {    
+    if (!data?.data) return;    
+    const filtered = data.data.filter(item => targetTables.includes(item.table_name));    
+    for (const table of filtered) saveToFirebase(table);    
+  }    
+
+  // === showdata() auto poll ===    
+  async function showdata() {    
+    const gc = (typeof window.gameCode !== "undefined")    
+      ? window.gameCode    
+      : ($("#room-url").val() || "");    
+
+    $.ajax({    
+      url: "/baccarat/getnewresult",    
+      type: "POST",    
+      headers: { "X-CSRF-TOKEN": $('meta[name="csrf-token"]').attr("content") },    
+      data: { gameCode: gc },    
+      success: function (result) {    
+        try {    
+          const obj = result && result.data ? result.data : [];    
+
+          $.each(obj, function (index, value) {    
+            if (typeof fillTable === "function") {    
+              try { fillTable(index, value.result); } catch {}    
+            }    
+            if (value && value.goodRoad && $("#table-" + index).length) {    
+              $("#table-" + index).find(".bridge_msg").text(value.goodRoad);    
+            }    
+          });    
+
+          // ✅ roomdata check + map id    
+          if (typeof roomdata === "function") {    
+            const roomMap = {    
+              C01: 1001, C02: 1002, C03: 1003, C04: 1004,    
+              C05: 1005, C06: 1006, C07: 1007, C08: 1008,    
+              C09: 1009, C10: 1010    
+            };    
+            obj.forEach(v => {    
+              if (roomMap[v.table_name]) {    
+                try {    
+                  roomdata({ id: roomMap[v.table_name], result: v.result });    
+                } catch {}    
+              }    
+            });    
+          }    
+
+          // Đẩy Firebase    
+          handleData(result);    
+
+          // Gộp log skip
+          if (skipLog.size > 0) {    
+            safeLog(`⏩ Bỏ qua (trùng dữ liệu): ${[...skipLog].join(", ")}`);    
+            skipLog.clear();    
+          }    
+        } catch (err) {    
+          console.error("showdata - xử lý success lỗi:", err);    
+        } finally {    
+          setTimeout(showdata, 5000); // tự gọi lại, không dùng setInterval    
+        }    
+      },    
+      error: function () {    
+        setTimeout(showdata, 5000); // retry    
+      }    
+    });    
+  }    
+  showdata();    
+
+  // === Safe log ===    
+  const origLog = console.log;    
+  function safeLog(...args) {    
+    const str = args.join(" ");    
+    if (str.startsWith("get Case:")) return;    
+    origLog.apply(console, args);    
+  }    
+  console.log = safeLog;    
+
+  // === Auto clear console định kỳ ===    
+  setInterval(() => {    
+    console.clear();    
+    safeLog("🧹 Đã clear console");    
+  }, 3 * 60 * 1000);    
+
+  safeLog("🔥 Script chạy: Auto poll /baccarat/getnewresult + Firebase (C01–C10, roomdata mapping, anti-spam)");    
+})();
